@@ -195,6 +195,7 @@ int main(int argc, char *argv[]) {
       geometry_container[iZone][iMesh]->MatchNearField(config_container[iZone]);
       geometry_container[iZone][iMesh]->MatchInterface(config_container[iZone]);
       geometry_container[iZone][iMesh]->MatchActuator_Disk(config_container[iZone]);
+      geometry_container[iZone][iMesh]->MatchPeriodicBoundaries(config_container[iZone]);
     }
     
   }

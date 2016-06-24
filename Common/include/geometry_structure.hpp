@@ -417,7 +417,13 @@ public:
 	virtual void MatchZone(CConfig *config, CGeometry *geometry_donor, CConfig *config_donor, 
 			unsigned short val_iZone, unsigned short val_nZone);
 
-	/*! 
+  /*!
+   * \brief A virtual member.
+   * \param[in] config - Definition of the particular problem.
+   */
+  virtual void MatchPeriodicBoundaries(CConfig *config);
+  
+	/*!
 	 * \brief A virtual member.
 	 * \param[in] config - Definition of the particular problem.
 	 * \param[in] action - Allocate or not the new elements.		 
@@ -1089,25 +1095,25 @@ public:
   void VisualizeControlVolume(CConfig *config, unsigned short action);
   
 	/*!
-	 * \brief Mach the near field boundary condition.
+	 * \brief Match the near field boundary condition.
 	 * \param[in] config - Definition of the particular problem.
 	 */
 	void MatchNearField(CConfig *config);
   
   /*!
-	 * \brief Mach the near field boundary condition.
+	 * \brief Match the near field boundary condition.
 	 * \param[in] config - Definition of the particular problem.
 	 */
 	void MatchActuator_Disk(CConfig *config);
 
 	/*! 
-	 * \brief Mach the interface boundary condition.
+	 * \brief Match the interface boundary condition.
 	 * \param[in] config - Definition of the particular problem.
 	 */
 	void MatchInterface(CConfig *config);
 
 	/*! 
-	 * \brief Mach the interface boundary condition.
+	 * \brief Match the interface boundary condition.
 	 * \param[in] config - Definition of the particular problem.
 	 * \param[in] geometry_donor - Geometry of the donor zone.
 	 * \param[in] config_donor - Definition of the donor problem.
@@ -1115,6 +1121,12 @@ public:
 	void MatchZone(CConfig *config, CGeometry *geometry_donor, CConfig *config_donor, 
 			unsigned short val_iZone, unsigned short val_nZone);
 
+  /*!
+   * \brief Match periodic boundary conditions.
+   * \param[in] config - Definition of the particular problem.
+   */
+  void MatchPeriodicBoundaries(CConfig *config);
+  
 	/*! 
 	 * \brief Set boundary vertex structure of the control volume.
 	 * \param[in] config - Definition of the particular problem.
@@ -1550,7 +1562,13 @@ public:
 	 */
 	void MatchInterface(CConfig *config);
 
-	/*! 
+  /*!
+   * \brief Match periodic boundary conditions.
+   * \param[in] config - Definition of the particular problem.
+   */
+  void MatchPeriodicBoundaries(CConfig *config);
+  
+	/*!
 	 * \brief Set boundary vertex structure of the agglomerated control volume.
 	 * \param[in] config - Definition of the particular problem.
 	 * \param[in] geometry - Geometrical definition of the problem.

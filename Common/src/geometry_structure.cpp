@@ -9372,6 +9372,357 @@ void CPhysicalGeometry::MatchZone(CConfig *config, CGeometry *geometry_donor, CC
   
 }
 
+void CPhysicalGeometry::MatchPeriodicBoundaries(CConfig *config) {
+  
+  unsigned short nPeriodic = 0;
+  unsigned short iMarker;
+  
+  su2double epsilon = 1e-1;
+  
+  for (iMarker = 0; iMarker < config->GetnMarker_All(); iMarker++) {
+    if (config->GetMarker_All_KindBC(iMarker) == PERIODIC_BOUNDARY) {
+      /*--- Evaluate the number of periodic boundary conditions ---*/
+      nPeriodic++;
+    }
+  }
+  
+  if (nPeriodic != 0) {
+    
+#ifndef HAVE_MPI
+    
+    unsigned short jMarker, iDim;
+    unsigned long iVertex, jVertex, iPoint, jPoint, pPoint;
+    su2double *center, *angles, rotMatrix[3][3] = {{0.0, 0.0, 0.0}, {0.0, 0.0, 0.0}, {0.0, 0.0, 0.0}},
+    translation[3], *trans, theta, phi, psi, cosTheta, sinTheta, cosPhi, sinPhi, cosPsi, sinPsi,
+    dx, dy, dz, rotCoord[3], epsilon = 1e-10, mindist = 1e6, maxdist = 0, *Coord_i, *Coord_j, dist = 0.0;
+    bool isBadMatch = false;
+
+    
+    /*--- Send an initial message to the console. ---*/
+    cout << "Setting the periodic boundary conditions." << endl;
+    maxdist = 0.0;
+    
+    /*--- Loop through each marker to find any periodic boundaries. ---*/
+    for (iMarker = 0; iMarker < config->GetnMarker_All(); iMarker++)
+      if (config->GetMarker_All_KindBC(iMarker) == PERIODIC_BOUNDARY) {
+        
+        /*--- Get marker index of the periodic donor boundary. ---*/
+        jMarker = config->GetMarker_Periodic_Donor(config->GetMarker_All_TagBound(iMarker));
+        
+        /*--- Write some info to the console. ---*/
+        cout << "Checking " << config->GetMarker_All_TagBound(iMarker);
+        cout << " boundary against periodic donor, " << config->GetMarker_All_TagBound(jMarker) << ". ";
+        
+        /*--- Retrieve the supplied periodic information. ---*/
+        center = config->GetPeriodicRotCenter(config->GetMarker_All_TagBound(iMarker));
+        angles = config->GetPeriodicRotAngles(config->GetMarker_All_TagBound(iMarker));
+        trans  = config->GetPeriodicTranslation(config->GetMarker_All_TagBound(iMarker));
+        
+        /*--- Store (center+trans) as it is constant and will be added on. ---*/
+        translation[0] = center[0] + trans[0];
+        translation[1] = center[1] + trans[1];
+        translation[2] = center[2] + trans[2];
+        
+        /*--- Store angles separately for clarity. Compute sines/cosines. ---*/
+        theta = angles[0];
+        phi   = angles[1];
+        psi   = angles[2];
+        
+        cosTheta = cos(theta);  cosPhi = cos(phi);  cosPsi = cos(psi);
+        sinTheta = sin(theta);  sinPhi = sin(phi);  sinPsi = sin(psi);
+        
+        /*--- Compute the rotation matrix. Note that the implicit
+         ordering is rotation about the x-axis, y-axis, then z-axis. ---*/
+        rotMatrix[0][0] = cosPhi*cosPsi;
+        rotMatrix[1][0] = cosPhi*sinPsi;
+        rotMatrix[2][0] = -sinPhi;
+        
+        rotMatrix[0][1] = sinTheta*sinPhi*cosPsi - cosTheta*sinPsi;
+        rotMatrix[1][1] = sinTheta*sinPhi*sinPsi + cosTheta*cosPsi;
+        rotMatrix[2][1] = sinTheta*cosPhi;
+        
+        rotMatrix[0][2] = cosTheta*sinPhi*cosPsi + sinTheta*sinPsi;
+        rotMatrix[1][2] = cosTheta*sinPhi*sinPsi - sinTheta*cosPsi;
+        rotMatrix[2][2] = cosTheta*cosPhi;
+        
+        /*--- Loop through all vertices and find/set the periodic point. ---*/
+        for (iVertex = 0; iVertex < nVertex[iMarker]; iVertex++) {
+          
+          /*--- Retrieve node information for this boundary point. ---*/
+          iPoint  = vertex[iMarker][iVertex]->GetNode();
+          Coord_i = node[iPoint]->GetCoord();
+          
+          /*--- Get the position vector from rot center to point. ---*/
+          dx = Coord_i[0] - center[0];
+          dy = Coord_i[1] - center[1];
+          if (nDim == 3) {
+            dz = Coord_i[2] - center[2];
+          } else {
+            dz = 0.0;
+          }
+          
+          /*--- Compute transformed point coordinates. ---*/
+          rotCoord[0] = rotMatrix[0][0]*dx
+          + rotMatrix[0][1]*dy
+          + rotMatrix[0][2]*dz + translation[0];
+          
+          rotCoord[1] = rotMatrix[1][0]*dx
+          + rotMatrix[1][1]*dy
+          + rotMatrix[1][2]*dz + translation[1];
+          
+          rotCoord[2] = rotMatrix[2][0]*dx
+          + rotMatrix[2][1]*dy
+          + rotMatrix[2][2]*dz + translation[2];
+          
+          /*--- Perform a search to find the closest donor point. ---*/
+          mindist = 1e10;
+          for (jVertex = 0; jVertex < nVertex[jMarker]; jVertex++) {
+            
+            /*--- Retrieve information for this jPoint. ---*/
+            jPoint = vertex[jMarker][jVertex]->GetNode();
+            Coord_j = node[jPoint]->GetCoord();
+            
+            /*--- Check the distance between the computed periodic
+             location and this jPoint. ---*/
+            dist = 0.0;
+            for (iDim = 0; iDim < nDim; iDim++) {
+              dist += (Coord_j[iDim]-rotCoord[iDim])*(Coord_j[iDim]-rotCoord[iDim]);
+            }
+            dist = sqrt(dist);
+            
+            /*---  Store vertex information if this is the closest
+             point found thus far. ---*/
+            if (dist < mindist) { mindist = dist; pPoint = jPoint; }
+          }
+          
+          maxdist = max(maxdist, mindist);
+          
+          /*--- Match the periodic points after completing the search. ---*/
+          vertex[iMarker][iVertex]->SetDonorPoint(pPoint, MASTER_NODE);
+          
+          /*--- Print warning if the nearest point was not within
+           the specified tolerance. Computation will continue. ---*/
+          if (mindist > epsilon) {
+            isBadMatch = true;
+            cout.precision(10);
+            cout << endl;
+            cout << "   Bad match for point " << iPoint << ".\tNearest";
+            cout << " donor distance: " << scientific << mindist << ".";
+          }
+        }
+        
+        /*--- Print final warning when finding bad matches. ---*/
+        if (isBadMatch) {
+          cout << endl;
+          cout << "\n !!! Warning !!!" << endl;
+          cout << "Bad matches found. Computation will continue, but be cautious.\n";
+        }
+        cout << endl;
+        isBadMatch = false;
+        
+        cout <<"The max distance between points is: " << maxdist <<"."<< endl;
+      }
+    
+#else
+    
+    unsigned short iMarker, iDim;
+    unsigned long iVertex, iPoint, pPoint = 0, jVertex, jPoint;
+    su2double *Coord_i, Coord_j[3], dist = 0.0, mindist, maxdist_local, maxdist_global;
+    int iProcessor, pProcessor = 0;
+    unsigned long nLocalVertex_NearField = 0, nGlobalVertex_NearField = 0, MaxLocalVertex_NearField = 0;
+    int rank, nProcessor;
+    
+    su2double *center, *angles, rotMatrix[3][3] = {{0.0, 0.0, 0.0}, {0.0, 0.0, 0.0}, {0.0, 0.0, 0.0}},
+    translation[3], *trans, theta, phi, psi, cosTheta, sinTheta, cosPhi, sinPhi, cosPsi, sinPsi,
+    dx, dy, dz, rotCoord[3];
+    
+    MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+    MPI_Comm_size(MPI_COMM_WORLD, &nProcessor);
+    
+    unsigned long *Buffer_Send_nVertex = new unsigned long [1];
+    unsigned long *Buffer_Receive_nVertex = new unsigned long [nProcessor];
+    
+    if (rank == MASTER_NODE)
+      cout << "Setting the periodic boundary conditions." << endl;
+    
+    /*--- Compute the number of vertex that have nearfield boundary condition
+     without including the ghost nodes ---*/
+    
+    nLocalVertex_NearField = 0;
+    for (iMarker = 0; iMarker < config->GetnMarker_All(); iMarker++)
+      if (config->GetMarker_All_KindBC(iMarker) == PERIODIC_BOUNDARY)
+        for (iVertex = 0; iVertex < GetnVertex(iMarker); iVertex++) {
+          iPoint = vertex[iMarker][iVertex]->GetNode();
+          if (node[iPoint]->GetDomain()) nLocalVertex_NearField ++;
+        }
+    
+    Buffer_Send_nVertex[0] = nLocalVertex_NearField;
+    
+    /*--- Send Near-Field vertex information --*/
+    
+    SU2_MPI::Allreduce(&nLocalVertex_NearField, &nGlobalVertex_NearField, 1, MPI_UNSIGNED_LONG, MPI_SUM, MPI_COMM_WORLD);
+    SU2_MPI::Allreduce(&nLocalVertex_NearField, &MaxLocalVertex_NearField, 1, MPI_UNSIGNED_LONG, MPI_MAX, MPI_COMM_WORLD);
+    SU2_MPI::Allgather(Buffer_Send_nVertex, 1, MPI_UNSIGNED_LONG, Buffer_Receive_nVertex, 1, MPI_UNSIGNED_LONG, MPI_COMM_WORLD);
+    
+    su2double *Buffer_Send_Coord = new su2double [MaxLocalVertex_NearField*nDim];
+    unsigned long *Buffer_Send_Point = new unsigned long [MaxLocalVertex_NearField];
+    
+    su2double *Buffer_Receive_Coord = new su2double [nProcessor*MaxLocalVertex_NearField*nDim];
+    unsigned long *Buffer_Receive_Point = new unsigned long [nProcessor*MaxLocalVertex_NearField];
+    
+    unsigned long nBuffer_Coord = MaxLocalVertex_NearField*nDim;
+    unsigned long nBuffer_Point = MaxLocalVertex_NearField;
+    
+    for (iVertex = 0; iVertex < MaxLocalVertex_NearField; iVertex++) {
+      Buffer_Send_Point[iVertex] = 0;
+      for (iDim = 0; iDim < nDim; iDim++)
+        Buffer_Send_Coord[iVertex*nDim+iDim] = 0.0;
+    }
+    
+    /*--- Copy coordinates and point to the auxiliar vector --*/
+    
+    nLocalVertex_NearField = 0;
+    for (iMarker = 0; iMarker < config->GetnMarker_All(); iMarker++)
+      if (config->GetMarker_All_KindBC(iMarker) == PERIODIC_BOUNDARY)
+        for (iVertex = 0; iVertex < GetnVertex(iMarker); iVertex++) {
+          iPoint = vertex[iMarker][iVertex]->GetNode();
+          if (node[iPoint]->GetDomain()) {
+            Buffer_Send_Point[nLocalVertex_NearField] = iPoint;
+            for (iDim = 0; iDim < nDim; iDim++)
+              Buffer_Send_Coord[nLocalVertex_NearField*nDim+iDim] = node[iPoint]->GetCoord(iDim);
+            nLocalVertex_NearField++;
+          }
+        }
+    
+    SU2_MPI::Allgather(Buffer_Send_Coord, nBuffer_Coord, MPI_DOUBLE, Buffer_Receive_Coord, nBuffer_Coord, MPI_DOUBLE, MPI_COMM_WORLD);
+    SU2_MPI::Allgather(Buffer_Send_Point, nBuffer_Point, MPI_UNSIGNED_LONG, Buffer_Receive_Point, nBuffer_Point, MPI_UNSIGNED_LONG, MPI_COMM_WORLD);
+    
+    /*--- Compute the closest point to a Near-Field boundary point ---*/
+    
+    maxdist_local = 0.0;
+    maxdist_global = 0.0;
+    for (iMarker = 0; iMarker < config->GetnMarker_All(); iMarker++) {
+      if (config->GetMarker_All_KindBC(iMarker) == PERIODIC_BOUNDARY) {
+        
+        /*--- Retrieve the supplied periodic information. ---*/
+        center = config->GetPeriodicRotCenter(config->GetMarker_All_TagBound(iMarker));
+        angles = config->GetPeriodicRotAngles(config->GetMarker_All_TagBound(iMarker));
+        trans  = config->GetPeriodicTranslation(config->GetMarker_All_TagBound(iMarker));
+        
+        /*--- Store (center+trans) as it is constant and will be added on. ---*/
+        translation[0] = center[0] + trans[0];
+        translation[1] = center[1] + trans[1];
+        translation[2] = center[2] + trans[2];
+        
+        /*--- Store angles separately for clarity. Compute sines/cosines. ---*/
+        theta = angles[0];
+        phi   = angles[1];
+        psi   = angles[2];
+        
+        cosTheta = cos(theta);  cosPhi = cos(phi);  cosPsi = cos(psi);
+        sinTheta = sin(theta);  sinPhi = sin(phi);  sinPsi = sin(psi);
+        
+        /*--- Compute the rotation matrix. Note that the implicit
+         ordering is rotation about the x-axis, y-axis, then z-axis. ---*/
+        rotMatrix[0][0] = cosPhi*cosPsi;
+        rotMatrix[1][0] = cosPhi*sinPsi;
+        rotMatrix[2][0] = -sinPhi;
+        
+        rotMatrix[0][1] = sinTheta*sinPhi*cosPsi - cosTheta*sinPsi;
+        rotMatrix[1][1] = sinTheta*sinPhi*sinPsi + cosTheta*cosPsi;
+        rotMatrix[2][1] = sinTheta*cosPhi;
+        
+        rotMatrix[0][2] = cosTheta*sinPhi*cosPsi + sinTheta*sinPsi;
+        rotMatrix[1][2] = cosTheta*sinPhi*sinPsi - sinTheta*cosPsi;
+        rotMatrix[2][2] = cosTheta*cosPhi;
+        
+        for (iVertex = 0; iVertex < nVertex[iMarker]; iVertex++) {
+          iPoint = vertex[iMarker][iVertex]->GetNode();
+          if (node[iPoint]->GetDomain()) {
+            
+            /*--- Coordinates of the boundary point ---*/
+            
+            Coord_i = node[iPoint]->GetCoord(); mindist = 1E6; pProcessor = 0; pPoint = 0;
+            
+            /*--- Get the position vector from rot center to point. ---*/
+            dx = Coord_i[0] - center[0];
+            dy = Coord_i[1] - center[1];
+            if (nDim == 3) {
+              dz = Coord_i[2] - center[2];
+            } else {
+              dz = 0.0;
+            }
+            
+            /*--- Compute transformed point coordinates. ---*/
+            rotCoord[0] = rotMatrix[0][0]*dx
+            + rotMatrix[0][1]*dy
+            + rotMatrix[0][2]*dz + translation[0];
+            
+            rotCoord[1] = rotMatrix[1][0]*dx
+            + rotMatrix[1][1]*dy
+            + rotMatrix[1][2]*dz + translation[1];
+            
+            rotCoord[2] = rotMatrix[2][0]*dx
+            + rotMatrix[2][1]*dy
+            + rotMatrix[2][2]*dz + translation[2];
+            
+            /*--- Loop over all the boundaries to find the pair ---*/
+            
+            for (iProcessor = 0; iProcessor < nProcessor; iProcessor++)
+              for (jVertex = 0; jVertex < Buffer_Receive_nVertex[iProcessor]; jVertex++) {
+                jPoint = Buffer_Receive_Point[iProcessor*MaxLocalVertex_NearField+jVertex];
+                
+                /*--- Compute the distance ---*/
+                
+                dist = 0.0; for (iDim = 0; iDim < nDim; iDim++) {
+                  Coord_j[iDim] = Buffer_Receive_Coord[(iProcessor*MaxLocalVertex_NearField+jVertex)*nDim+iDim];
+                  dist += pow(Coord_j[iDim]-rotCoord[iDim],2.0);
+                } dist = sqrt(dist);
+                
+                if (((dist < mindist) && (iProcessor != rank)) ||
+                    ((dist < mindist) && (iProcessor == rank) && (jPoint != iPoint))) {
+                  mindist = dist; pProcessor = iProcessor; pPoint = jPoint;
+                }
+              }
+            
+            /*--- Store the value of the pair ---*/
+            
+            maxdist_local = max(maxdist_local, mindist);
+            vertex[iMarker][iVertex]->SetDonorPoint(pPoint, pProcessor);
+            
+            if (mindist > epsilon) {
+              cout.precision(10);
+              cout << endl;
+              cout << "   Bad match for point " << iPoint << ".\tNearest";
+              cout << " donor distance: " << scientific << mindist << ".";
+              vertex[iMarker][iVertex]->SetDonorPoint(iPoint, pProcessor);
+              maxdist_local = min(maxdist_local, 0.0);
+            }
+            
+          }
+        }
+        
+      }
+    }
+    
+    SU2_MPI::Reduce(&maxdist_local, &maxdist_global, 1, MPI_DOUBLE, MPI_MAX, MASTER_NODE, MPI_COMM_WORLD);
+    
+    if (rank == MASTER_NODE) cout <<"The max distance between points is: " << maxdist_global <<"."<< endl;
+    
+    delete[] Buffer_Send_Coord;
+    delete[] Buffer_Send_Point;
+    
+    delete[] Buffer_Receive_Coord;
+    delete[] Buffer_Receive_Point;
+    
+    delete[] Buffer_Send_nVertex;
+    delete[] Buffer_Receive_nVertex;
+    
+#endif
+    
+  }
+  
+}
 
 void CPhysicalGeometry::SetControlVolume(CConfig *config, unsigned short action) {
   unsigned long face_iPoint = 0, face_jPoint = 0, iPoint, iElem;
@@ -13462,6 +13813,31 @@ void CMultiGridGeometry::MatchInterface(CConfig *config) {
   
   for (iMarker = 0; iMarker < config->GetnMarker_All(); iMarker++) {
     if (config->GetMarker_All_KindBC(iMarker) == INTERFACE_BOUNDARY) {
+      for (iVertex = 0; iVertex < nVertex[iMarker]; iVertex++) {
+        iPoint = vertex[iMarker][iVertex]->GetNode();
+        if (node[iPoint]->GetDomain()) {
+          vertex[iMarker][iVertex]->SetDonorPoint(iPoint, iProcessor);
+        }
+      }
+    }
+  }
+  
+}
+
+void CMultiGridGeometry::MatchPeriodicBoundaries(CConfig *config) {
+  
+  unsigned short iMarker;
+  unsigned long iVertex, iPoint;
+  int iProcessor;
+  
+#ifndef HAVE_MPI
+  iProcessor = MASTER_NODE;
+#else
+  MPI_Comm_rank(MPI_COMM_WORLD, &iProcessor);
+#endif
+  
+  for (iMarker = 0; iMarker < config->GetnMarker_All(); iMarker++) {
+    if (config->GetMarker_All_KindBC(iMarker) == PERIODIC_BOUNDARY) {
       for (iVertex = 0; iVertex < nVertex[iMarker]; iVertex++) {
         iPoint = vertex[iMarker][iVertex]->GetNode();
         if (node[iPoint]->GetDomain()) {
